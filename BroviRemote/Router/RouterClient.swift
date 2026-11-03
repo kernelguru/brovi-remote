@@ -10,6 +10,8 @@ struct RouterError: LocalizedError {
     }
 
     static let tokenErrors: Set<String> = ["125001", "125002", "125003"]
+    /// Fehler, nach denen eine Neuanmeldung sinnvoll ist (Sitzung abgelaufen).
+    static let sessionErrors: Set<String> = ["100003", "125002"]
 
     static func fromCode(_ code: String) -> RouterError {
         let known: [String: String] = [
@@ -47,15 +49,55 @@ actor RouterClient {
         self.session = URLSession(configuration: config)
     }
 
+    /// Zugangsdaten nur im Arbeitsspeicher, um abgelaufene Sitzungen still zu erneuern.
+    private var credentials: (username: String, password: String)?
+
     // MARK: - Öffentliche API
 
     func get(_ path: String) async throws -> XMLNode {
+        try await recoveringSession { try await self.getOnce(path) }
+    }
+
+    /// Sendet `<request>inner</request>` per POST.
+    func post(_ path: String, _ inner: String) async throws -> XMLNode {
+        try await recoveringSession { try await self.postRetryingToken(path, inner) }
+    }
+
+    /// Rohzugriff für den API-Explorer. `body` ist das komplette XML (oder nil für GET).
+    func raw(path: String, body: String?) async throws -> String {
+        try await recoveringSession { try await self.rawOnce(path: path, body: body) }
+    }
+
+    func login(username: String, password: String) async throws {
+        try await performLogin(username: username, password: password)
+        credentials = (username, password)
+    }
+
+    func logout() async throws {
+        credentials = nil
+        _ = try await postRetryingToken("/api/user/logout", "<Logout>1</Logout>")
+    }
+
+    // MARK: - Sitzung
+
+    /// Läuft die Router-Sitzung ab (z. B. nach längerer Pause), wird einmal neu angemeldet.
+    private func recoveringSession<T>(_ operation: () async throws -> T) async throws -> T {
+        do {
+            return try await operation()
+        } catch let error as RouterError where RouterError.sessionErrors.contains(error.code ?? "") {
+            guard let credentials else { throw error }
+            try await performLogin(username: credentials.username, password: credentials.password)
+            return try await operation()
+        }
+    }
+
+    private func getOnce(_ path: String) async throws -> XMLNode {
         let (data, _) = try await send(path: path, body: nil, token: tokens.count == 1 ? tokens[0] : nil)
         return try Self.parseResponse(data)
     }
 
-    /// Sendet `<request>inner</request>` per POST. Bei Token-Fehlern wird einmal neu versucht.
-    func post(_ path: String, _ inner: String) async throws -> XMLNode {
+    /// Bei Token-Fehlern wird einmal mit frischem Token neu versucht.
+    private func postRetryingToken(_ path: String, _ inner: String) async throws -> XMLNode {
         do {
             return try await postOnce(path, inner)
         } catch let error as RouterError where RouterError.tokenErrors.contains(error.code ?? "") {
@@ -64,27 +106,30 @@ actor RouterClient {
         }
     }
 
-    /// Rohzugriff für den API-Explorer. `body` ist das komplette XML (oder nil für GET).
-    func raw(path: String, body: String?) async throws -> String {
+    private func rawOnce(path: String, body: String?) async throws -> String {
         var token: String? = tokens.count == 1 ? tokens[0] : nil
         if body != nil {
             if tokens.isEmpty { try await refreshToken() }
             token = nextToken()
         }
         let (data, _) = try await send(path: path, body: body, token: token)
+        if let node = XMLNode.parse(data), node.name == "error",
+           let code = node["code"], RouterError.sessionErrors.contains(code) {
+            throw RouterError.fromCode(code)
+        }
         return String(decoding: data, as: UTF8.self)
     }
 
     /// Login wie in huawei-lte-api (Salamek): state-login prüfen, bei password_type 4
     /// zuerst SCRAM versuchen, sonst bzw. als Rückfall den klassischen Login.
-    func login(username: String, password: String) async throws {
+    private func performLogin(username: String, password: String) async throws {
         tokens.removeAll()
         sessionID = nil
         try await initializeSession()
 
         let state: XMLNode
         do {
-            state = try await get("/api/user/state-login")
+            state = try await getOnce("/api/user/state-login")
         } catch let error as RouterError where error.code == "100002" {
             return // Gerät ohne Login
         }
@@ -96,10 +141,6 @@ actor RouterClient {
             if tokens.isEmpty { try await initializeSession() }
         }
         try await legacyLogin(username: username, password: password, passwordType: passwordType)
-    }
-
-    func logout() async throws {
-        _ = try await post("/api/user/logout", "<Logout>1</Logout>")
     }
 
     // MARK: - Intern
@@ -179,11 +220,11 @@ actor RouterClient {
     }
 
     private func refreshToken() async throws {
-        if let node = try? await get("/api/webserver/token"), let token = node["token"], !token.isEmpty {
+        if let node = try? await getOnce("/api/webserver/token"), let token = node["token"], !token.isEmpty {
             tokens = [token]
             return
         }
-        let node = try await get("/api/webserver/SesTokInfo")
+        let node = try await getOnce("/api/webserver/SesTokInfo")
         if sessionID == nil, let info = node["SesInfo"], let range = info.range(of: "SessionID=") {
             sessionID = String(info[range.upperBound...])
         }

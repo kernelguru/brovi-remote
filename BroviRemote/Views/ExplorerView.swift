@@ -74,6 +74,7 @@ struct ExplorerView: View {
                         .textSelection(.enabled)
                 }
             }
+            .appBackground()
             .navigationTitle("API-Explorer")
         }
     }

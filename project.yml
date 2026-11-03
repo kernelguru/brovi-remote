@@ -20,6 +20,7 @@ targets:
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
         NSLocalNetworkUsageDescription: Die App verbindet sich mit deinem Router im lokalen Netzwerk.
+        NSFaceIDUsageDescription: Face ID schützt dein gespeichertes Router-Passwort.
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
           NSAllowsLocalNetworking: true

@@ -114,6 +114,7 @@ struct NetworkView: View {
                     }
                 }
             }
+            .appBackground()
             .navigationTitle("Netz")
             .confirmationDialog("Einstellungen übernehmen?", isPresented: $confirmApply, titleVisibility: .visible) {
                 Button("Übernehmen") { Task { await apply() } }
