@@ -11,6 +11,12 @@ iPhone-App (SwiftUI) zum Auslesen und Einstellen eines **Brovi H153-381 5G**-Rou
 - **Netz** – Netzmodus und LTE-Bandsperre; alle weiteren Felder aus `/api/net/net-mode` sind editierbar
 - **API-Explorer** – beliebige GET-/POST-Anfragen an den Router, um weitere Endpunkte zu finden
 
+## Referenz
+
+Login, CSRF-Token-Handling und Bandmasken folgen der Python-Bibliothek
+[huawei-lte-api](https://github.com/Salamek/huawei-lte-api) (Salamek).
+Diese kennt allerdings keine 5G-spezifischen Endpunkte (SA/NSA, NR-Bänder).
+
 ## Build
 
 Gebaut wird per GitHub Actions auf einem macOS-Runner (`.github/workflows/build.yml`):

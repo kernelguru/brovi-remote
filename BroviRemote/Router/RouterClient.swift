@@ -50,7 +50,7 @@ actor RouterClient {
     // MARK: - Öffentliche API
 
     func get(_ path: String) async throws -> XMLNode {
-        let (data, _) = try await send(path: path, body: nil, token: nil)
+        let (data, _) = try await send(path: path, body: nil, token: tokens.count == 1 ? tokens[0] : nil)
         return try Self.parseResponse(data)
     }
 
@@ -66,7 +66,7 @@ actor RouterClient {
 
     /// Rohzugriff für den API-Explorer. `body` ist das komplette XML (oder nil für GET).
     func raw(path: String, body: String?) async throws -> String {
-        var token: String?
+        var token: String? = tokens.count == 1 ? tokens[0] : nil
         if body != nil {
             if tokens.isEmpty { try await refreshToken() }
             token = nextToken()
@@ -75,41 +75,27 @@ actor RouterClient {
         return String(decoding: data, as: UTF8.self)
     }
 
+    /// Login wie in huawei-lte-api (Salamek): state-login prüfen, bei password_type 4
+    /// zuerst SCRAM versuchen, sonst bzw. als Rückfall den klassischen Login.
     func login(username: String, password: String) async throws {
         tokens.removeAll()
         sessionID = nil
-        try await refreshToken()
+        try await initializeSession()
 
-        let firstNonce = Crypto.randomHex(bytes: 32)
-        let challenge: XMLNode
+        let state: XMLNode
         do {
-            challenge = try await postOnce(
-                "/api/user/challenge_login",
-                "<username>\(username.xmlEscaped)</username><firstnonce>\(firstNonce)</firstnonce><mode>1</mode>"
-            )
+            state = try await get("/api/user/state-login")
         } catch let error as RouterError where error.code == "100002" {
-            // Ältere Firmware ohne SCRAM-Login
-            try await legacyLogin(username: username, password: password)
-            return
+            return // Gerät ohne Login
         }
+        if state["State"] == "0" { return } // bereits angemeldet
 
-        guard let salt = challenge["salt"],
-              let iterations = challenge["iterations"].flatMap({ Int($0) }),
-              let serverNonce = challenge["servernonce"] else {
-            throw RouterError(code: nil, message: "Unerwartete Antwort beim Login")
+        let passwordType = state["password_type"] ?? "0"
+        if passwordType == "4" {
+            if try await scramLogin(username: username, password: password) { return }
+            if tokens.isEmpty { try await initializeSession() }
         }
-
-        let proof = Crypto.scramClientProof(
-            password: password,
-            saltHex: salt,
-            iterations: iterations,
-            firstNonce: firstNonce,
-            serverNonce: serverNonce
-        )
-        _ = try await postOnce(
-            "/api/user/authentication_login",
-            "<clientproof>\(proof)</clientproof><finalnonce>\(serverNonce)</finalnonce>"
-        )
+        try await legacyLogin(username: username, password: password, passwordType: passwordType)
     }
 
     func logout() async throws {
@@ -118,16 +104,57 @@ actor RouterClient {
 
     // MARK: - Intern
 
-    private func legacyLogin(username: String, password: String) async throws {
-        if tokens.isEmpty { try await refreshToken() }
-        guard let token = tokens.first else {
-            throw RouterError(code: nil, message: "Kein Token erhalten")
+    /// Gibt `false` zurück, wenn der Router kein SCRAM anbietet (dann klassischer Login).
+    private func scramLogin(username: String, password: String) async throws -> Bool {
+        let firstNonce = Crypto.randomHex(bytes: 32)
+        let challenge: XMLNode
+        do {
+            challenge = try await postOnce(
+                "/api/user/challenge_login",
+                "<username>\(username.xmlEscaped)</username><firstnonce>\(firstNonce)</firstnonce><mode>1</mode>"
+            )
+        } catch let error as RouterError where error.code == "100002" || error.code == "100003" {
+            return false
         }
-        let passwordHash = Data(Crypto.sha256Hex(password).utf8).base64EncodedString()
-        let auth = Data(Crypto.sha256Hex(username + passwordHash + token).utf8).base64EncodedString()
+
+        guard let salt = challenge["salt"],
+              let iterations = challenge["iterations"].flatMap({ Int($0) }),
+              let serverNonce = challenge["servernonce"] else {
+            return false
+        }
+
+        let scram = Crypto.scram(
+            password: password,
+            saltHex: salt,
+            iterations: iterations,
+            firstNonce: firstNonce,
+            serverNonce: serverNonce
+        )
+        let result = try await postOnce(
+            "/api/user/authentication_login",
+            "<clientproof>\(scram.clientProof)</clientproof><finalnonce>\(serverNonce)</finalnonce>"
+        )
+        guard result["serversignature"]?.lowercased() == scram.serverSignature else {
+            throw RouterError(code: nil, message: "Ungültige Server-Signatur beim Login")
+        }
+        return true
+    }
+
+    private func legacyLogin(username: String, password: String, passwordType: String) async throws {
+        if tokens.isEmpty { try await initializeSession() }
+        let encoded: String
+        if passwordType == "4" {
+            guard let token = tokens.first else {
+                throw RouterError(code: nil, message: "Kein Token erhalten")
+            }
+            let passwordHash = Data(Crypto.sha256Hex(password).utf8).base64EncodedString()
+            encoded = Data(Crypto.sha256Hex(username + passwordHash + token).utf8).base64EncodedString()
+        } else {
+            encoded = Data(password.utf8).base64EncodedString()
+        }
         _ = try await postOnce(
             "/api/user/login",
-            "<Username>\(username.xmlEscaped)</Username><Password>\(auth)</Password><password_type>4</password_type>"
+            "<Username>\(username.xmlEscaped)</Username><Password>\(encoded)</Password><password_type>\(passwordType)</password_type>"
         )
     }
 
@@ -138,9 +165,25 @@ actor RouterClient {
         return try Self.parseResponse(data)
     }
 
+    /// Startseite laden (Session-Cookie + csrf_token aus den Meta-Tags), sonst Token per API holen.
+    private func initializeSession() async throws {
+        if let result = try? await send(path: "/", body: nil, token: nil) {
+            let html = String(decoding: result.0, as: UTF8.self)
+            let found = Self.csrfTokens(in: html)
+            if !found.isEmpty, sessionID != nil {
+                tokens = found
+                return
+            }
+        }
+        try await refreshToken()
+    }
+
     private func refreshToken() async throws {
-        let (data, _) = try await send(path: "/api/webserver/SesTokInfo", body: nil, token: nil)
-        let node = try Self.parseResponse(data)
+        if let node = try? await get("/api/webserver/token"), let token = node["token"], !token.isEmpty {
+            tokens = [token]
+            return
+        }
+        let node = try await get("/api/webserver/SesTokInfo")
         if sessionID == nil, let info = node["SesInfo"], let range = info.range(of: "SessionID=") {
             sessionID = String(info[range.upperBound...])
         }
@@ -148,6 +191,14 @@ actor RouterClient {
             throw RouterError(code: nil, message: "Kein Token vom Router erhalten")
         }
         tokens = [token]
+    }
+
+    private static func csrfTokens(in html: String) -> [String] {
+        guard let regex = try? NSRegularExpression(pattern: #"name="csrf_token"\s+content="(\S+)""#) else { return [] }
+        let range = NSRange(html.startIndex..., in: html)
+        return regex.matches(in: html, range: range).compactMap { match in
+            Range(match.range(at: 1), in: html).map { String(html[$0]) }
+        }
     }
 
     private func nextToken() -> String? {
@@ -167,7 +218,7 @@ actor RouterClient {
         if let body {
             request.httpMethod = "POST"
             request.httpBody = Data(body.utf8)
-            request.setValue("application/x-www-form-urlencoded; charset=UTF-8", forHTTPHeaderField: "Content-Type")
+            request.setValue("application/xml", forHTTPHeaderField: "Content-Type")
         }
         if let token {
             request.setValue(token, forHTTPHeaderField: "__RequestVerificationToken")
