@@ -1,0 +1,35 @@
+name: BroviRemote
+options:
+  bundleIdPrefix: de.marck
+  deploymentTarget:
+    iOS: "16.0"
+targets:
+  BroviRemote:
+    type: application
+    platform: iOS
+    sources:
+      - BroviRemote
+    scheme: {}
+    info:
+      path: BroviRemote/Info.plist
+      properties:
+        CFBundleDisplayName: Brovi Remote
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        NSLocalNetworkUsageDescription: Die App verbindet sich mit deinem Router im lokalen Netzwerk.
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+          NSAllowsLocalNetworking: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: de.marck.broviremote
+        MARKETING_VERSION: 0.1.0
+        CURRENT_PROJECT_VERSION: 1
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1"
+        CODE_SIGNING_ALLOWED: "NO"
+        CODE_SIGNING_REQUIRED: "NO"
+        CODE_SIGN_IDENTITY: ""

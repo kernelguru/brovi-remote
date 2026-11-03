@@ -1,0 +1,8 @@
+.DS_Store
+*.xcodeproj/
+*.xcworkspace/
+BroviRemote/Info.plist
+build/
+DerivedData/
+Payload/
+*.ipa
