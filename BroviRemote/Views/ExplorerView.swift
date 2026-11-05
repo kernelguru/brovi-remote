@@ -24,6 +24,8 @@ struct ExplorerView: View {
         "/api/net/net-mode",
         "/api/net/net-mode-list",
         "/api/net/lock-freq",
+        "/api/user/second_login",
+        "/api/developer/developermode-featureswitch",
         "/api/net/net-feature-switch",
         "/api/net/cell-info",
         "/api/device/nbrcellinfo",

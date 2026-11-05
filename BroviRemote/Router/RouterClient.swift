@@ -134,8 +134,20 @@ actor RouterClient {
         guard let credentials else {
             throw RouterError(code: nil, message: "Keine Zugangsdaten für die Entwickleranmeldung")
         }
-        guard try await scramLogin(username: credentials.username, password: credentials.password, loginFlag: "2") else {
+        let accepted: Bool
+        do {
+            accepted = try await scramLogin(username: credentials.username, password: credentials.password, loginFlag: "2")
+        } catch let error as RouterError {
+            throw RouterError(code: error.code, message: "Entwickleranmeldung abgelehnt: \(error.message)")
+        }
+        guard accepted else {
             throw RouterError(code: nil, message: "Entwickleranmeldung wird nicht unterstützt")
+        }
+        if let state = try? await getOnce("/api/user/second_login"), state["enable"] == "0" {
+            // Ohne zweite Anmeldung öffnet die Weboberfläche das Entwicklermenü nur per Datalock-Code.
+            let features = try? await getOnce("/api/developer/developermode-featureswitch")
+            let hint = features?["nodatalock_enable"] == "1" ? "" : " Der Router verlangt dafür einen Datalock-Code."
+            throw RouterError(code: nil, message: "Router hat die Entwickleranmeldung nicht aktiviert.\(hint)")
         }
     }
 
@@ -256,10 +268,10 @@ actor RouterClient {
             firstNonce: firstNonce,
             serverNonce: serverNonce
         )
-        let result = try await postOnce(
-            "/api/user/authentication_login",
-            "<clientproof>\(scram.clientProof)</clientproof><finalnonce>\(serverNonce)</finalnonce>"
-        )
+        // Die Weboberfläche schickt loginflag in beiden Schritten (main.js, Route „developermode“).
+        var proof = "<clientproof>\(scram.clientProof)</clientproof><finalnonce>\(serverNonce)</finalnonce>"
+        if let loginFlag { proof += "<loginflag>\(loginFlag)</loginflag>" }
+        let result = try await postOnce("/api/user/authentication_login", proof)
         guard result["serversignature"]?.lowercased() == scram.serverSignature else {
             throw RouterError(code: nil, message: "Ungültige Server-Signatur beim Login")
         }
