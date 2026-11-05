@@ -15,18 +15,37 @@ struct NetworkView: View {
     @State private var isError = false
     @State private var busy = false
     @State private var confirmApply = false
+    @State private var radioModeID = ""
+    @State private var loadedRadioModeID = ""
+    @State private var confirmRadioMode = false
 
-    /// Bekannte HiLink-Werte. Die 5G-Werte sind für den H153-381 noch nicht bestätigt.
+    /// Werte laut /api/net/net-mode-list und config/network/net-mode.xml des H153-381.
     private struct ModePreset { let value: String; let label: String }
     private struct LTEBandInfo { let band: Int; let label: String }
 
     private static let modePresets: [ModePreset] = [
         ModePreset(value: "00", label: "Automatisch"),
+        ModePreset(value: "08", label: "Nur 5G"),
         ModePreset(value: "03", label: "Nur 4G"),
-        ModePreset(value: "08", label: "Nur 5G (ungeprüft)"),
-        ModePreset(value: "0803", label: "5G + 4G (ungeprüft)"),
-        ModePreset(value: "0302", label: "4G + 3G"),
-        ModePreset(value: "02", label: "Nur 3G"),
+    ]
+
+    /// Funkmodus wie im (versteckten) Entwicklermenü „networkmode“ der Router-Weboberfläche:
+    /// gesendet werden nur NetworkMode plus networkOption bzw. LTEBandOption.
+    private struct RadioMode: Identifiable {
+        let id: String
+        let label: String
+        let networkMode: String
+        let field: String
+        let value: String
+    }
+
+    private static let radioModes: [RadioMode] = [
+        RadioMode(id: "sa", label: "5G SA", networkMode: "00", field: "networkOption", value: "1"),
+        RadioMode(id: "nsa", label: "5G NSA", networkMode: "00", field: "networkOption", value: "0"),
+        RadioMode(id: "sa_nsa", label: "5G SA + NSA", networkMode: "00", field: "networkOption", value: "2"),
+        RadioMode(id: "lte", label: "Nur 4G", networkMode: "03", field: "LTEBandOption", value: "0"),
+        RadioMode(id: "lte_tdd", label: "Nur 4G TDD", networkMode: "03", field: "LTEBandOption", value: "2"),
+        RadioMode(id: "lte_fdd", label: "Nur 4G FDD", networkMode: "03", field: "LTEBandOption", value: "1"),
     ]
 
     private static let commonLTEBands: [LTEBandInfo] = [
@@ -50,6 +69,30 @@ struct NetworkView: View {
                 }
 
                 Section {
+                    Picker("Funkmodus", selection: $radioModeID) {
+                        if radioModeID.isEmpty {
+                            Text("Unbekannt").tag("")
+                        }
+                        ForEach(Self.radioModes) { mode in
+                            Text(mode.label).tag(mode.id)
+                        }
+                    }
+                    Button("Funkmodus übernehmen") { confirmRadioMode = true }
+                        .disabled(busy || radioModeID.isEmpty || radioModeID == loadedRadioModeID)
+                        .confirmationDialog("Funkmodus ändern?", isPresented: $confirmRadioMode, titleVisibility: .visible) {
+                            Button("Übernehmen") { Task { await applyRadioMode() } }
+                        } message: {
+                            Text(radioModeID == "sa"
+                                 ? "Im reinen SA-Modus bricht die Verbindung ab, wenn am Standort kein 5G SA verfügbar ist. Der Router verbindet sich neu, das kann bis zu einer Minute dauern."
+                                 : "Der Router verbindet sich neu, das kann bis zu einer Minute dauern.")
+                        }
+                } header: {
+                    Text("5G-Modus")
+                } footer: {
+                    Text("SA = Standalone, NSA = Non-Standalone (5G mit 4G-Anker).")
+                }
+
+                Section {
                     LabeledContent("NetworkMode") {
                         TextField("00", text: $networkMode)
                             .font(mono)
@@ -64,7 +107,7 @@ struct NetworkView: View {
                 } header: {
                     Text("Netzmodus")
                 } footer: {
-                    Text("Rohwert aus /api/net/net-mode. Die 5G-Werte vor dem Speichern im API-Tab gegen „net-mode-list“ prüfen.")
+                    Text("Rohwert aus /api/net/net-mode. Für SA/NSA den Abschnitt „5G-Modus“ verwenden.")
                 }
 
                 Section {
@@ -145,6 +188,8 @@ struct NetworkView: View {
             networkMode = node["NetworkMode"] ?? ""
             lteBandHex = node["LTEBand"] ?? ""
             extras = loaded.filter { $0.key != "NetworkMode" && $0.key != "LTEBand" }
+            loadedRadioModeID = Self.radioModeID(for: node)
+            radioModeID = loadedRadioModeID
             supported = (try? await client.raw(path: "/api/net/net-mode-list", body: nil)) ?? ""
             message = nil
         } catch {
@@ -173,6 +218,30 @@ struct NetworkView: View {
             _ = try await client.post("/api/net/net-mode", inner)
             show("Gespeichert.", isError: false)
         } catch {
+            show(error.localizedDescription, isError: true)
+        }
+    }
+
+    /// Entspricht getConversionValue im Router-Skript networkmode.js.
+    private static func radioModeID(for node: XMLNode) -> String {
+        guard let networkMode = node["NetworkMode"] else { return "" }
+        return radioModes.first { mode in
+            mode.networkMode == networkMode && node[mode.field] == mode.value
+        }?.id ?? ""
+    }
+
+    private func applyRadioMode() async {
+        guard let mode = Self.radioModes.first(where: { $0.id == radioModeID }) else { return }
+        busy = true
+        show("Router verbindet sich neu …", isError: false)
+        let inner = "<NetworkMode>\(mode.networkMode)</NetworkMode><\(mode.field)>\(mode.value)</\(mode.field)>"
+        do {
+            _ = try await client.post("/api/net/net-mode", inner, timeout: 90)
+            busy = false
+            await load()
+            show("Funkmodus „\(mode.label)“ gesetzt.", isError: false)
+        } catch {
+            busy = false
             show(error.localizedDescription, isError: true)
         }
     }

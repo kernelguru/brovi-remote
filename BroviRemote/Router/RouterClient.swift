@@ -42,7 +42,8 @@ actor RouterClient {
     init(baseURL: URL) {
         self.baseURL = baseURL
         let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 10
+        // Obergrenze; die eigentliche Zeitüberschreitung setzt jede Anfrage selbst.
+        config.timeoutIntervalForRequest = 120
         config.httpShouldSetCookies = false
         config.httpCookieAcceptPolicy = .never
         config.httpCookieStorage = nil
@@ -59,8 +60,9 @@ actor RouterClient {
     }
 
     /// Sendet `<request>inner</request>` per POST.
-    func post(_ path: String, _ inner: String) async throws -> XMLNode {
-        try await recoveringSession { try await self.postRetryingToken(path, inner) }
+    /// `timeout`: z. B. 90 s für Funkmodus-Wechsel, bei denen der Router die Verbindung neu aufbaut.
+    func post(_ path: String, _ inner: String, timeout: TimeInterval = RouterClient.defaultTimeout) async throws -> XMLNode {
+        try await recoveringSession { try await self.postRetryingToken(path, inner, timeout: timeout) }
     }
 
     /// Rohzugriff für den API-Explorer. `body` ist das komplette XML (oder nil für GET).
@@ -97,12 +99,13 @@ actor RouterClient {
     }
 
     /// Bei Token-Fehlern wird einmal mit frischem Token neu versucht.
-    private func postRetryingToken(_ path: String, _ inner: String) async throws -> XMLNode {
+    private func postRetryingToken(_ path: String, _ inner: String,
+                                   timeout: TimeInterval = RouterClient.defaultTimeout) async throws -> XMLNode {
         do {
-            return try await postOnce(path, inner)
+            return try await postOnce(path, inner, timeout: timeout)
         } catch let error as RouterError where RouterError.tokenErrors.contains(error.code ?? "") {
             tokens.removeAll()
-            return try await postOnce(path, inner)
+            return try await postOnce(path, inner, timeout: timeout)
         }
     }
 
@@ -199,10 +202,11 @@ actor RouterClient {
         )
     }
 
-    private func postOnce(_ path: String, _ inner: String) async throws -> XMLNode {
+    private func postOnce(_ path: String, _ inner: String,
+                          timeout: TimeInterval = RouterClient.defaultTimeout) async throws -> XMLNode {
         if tokens.isEmpty { try await refreshToken() }
         let body = #"<?xml version="1.0" encoding="UTF-8"?><request>"# + inner + "</request>"
-        let (data, _) = try await send(path: path, body: body, token: nextToken())
+        let (data, _) = try await send(path: path, body: body, token: nextToken(), timeout: timeout)
         return try Self.parseResponse(data)
     }
 
@@ -247,11 +251,14 @@ actor RouterClient {
         return tokens.first
     }
 
-    private func send(path: String, body: String?, token: String?) async throws -> (Data, HTTPURLResponse) {
+    static let defaultTimeout: TimeInterval = 10
+
+    private func send(path: String, body: String?, token: String?,
+                      timeout: TimeInterval = RouterClient.defaultTimeout) async throws -> (Data, HTTPURLResponse) {
         guard let url = URL(string: path, relativeTo: baseURL) else {
             throw RouterError(code: nil, message: "Ungültiger Pfad")
         }
-        var request = URLRequest(url: url)
+        var request = URLRequest(url: url, timeoutInterval: timeout)
         request.setValue("XMLHttpRequest", forHTTPHeaderField: "X-Requested-With")
         if let sessionID {
             request.setValue("SessionID=\(sessionID)", forHTTPHeaderField: "Cookie")
