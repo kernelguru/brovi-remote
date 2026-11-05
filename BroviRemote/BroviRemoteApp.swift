@@ -112,6 +112,8 @@ struct ContentView: View {
                     .tabItem { Label("Funk", systemImage: "antenna.radiowaves.left.and.right") }
                 NetworkView(client: client)
                     .tabItem { Label("Netz", systemImage: "slider.horizontal.3") }
+                LockView(client: client)
+                    .tabItem { Label("Sperre", systemImage: "lock.shield") }
                 ExplorerView(client: client)
                     .tabItem { Label("API", systemImage: "terminal") }
             }

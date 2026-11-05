@@ -24,6 +24,14 @@ final class XMLNode: @unchecked Sendable {
         children.first { $0.name == key }?.value
     }
 
+    func child(_ name: String) -> XMLNode? {
+        children.first { $0.name == name }
+    }
+
+    func children(named name: String) -> [XMLNode] {
+        children.filter { $0.name == name }
+    }
+
     /// Direkte Kindelemente als Schlüssel/Wert-Liste (in Original-Reihenfolge).
     var fields: [Field] {
         children.map { Field(key: $0.name, value: $0.value) }

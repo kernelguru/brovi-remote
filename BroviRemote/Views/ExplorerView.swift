@@ -23,6 +23,12 @@ struct ExplorerView: View {
         "/api/net/current-plmn",
         "/api/net/net-mode",
         "/api/net/net-mode-list",
+        "/api/net/lock-freq",
+        "/api/net/net-feature-switch",
+        "/api/net/cell-info",
+        "/api/device/nbrcellinfo",
+        "/api/device/seccellinfo",
+        "/config/network/bandfreqlist.xml",
         "/api/net/network",
         "/api/net/register",
     ]
