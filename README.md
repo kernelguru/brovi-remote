@@ -5,17 +5,23 @@ iPhone-App (SwiftUI) zum Auslesen und Einstellen eines **Brovi H153-381 5G**-Rou
 
 ## Funktionen
 
-- **Login** per SCRAM (neuere Firmware) mit Rückfall auf den älteren Passwort-Login
-- **Funkstatus** – LTE- und 5G-NR-Werte (RSRP, RSRQ, SINR, Band, PCI, EARFCN …),
-  aktualisiert alle 3 Sekunden
-- **Netz** – Netzmodus und LTE-Bandsperre; alle weiteren Felder aus `/api/net/net-mode` sind editierbar
-- **API-Explorer** – beliebige GET-/POST-Anfragen an den Router, um weitere Endpunkte zu finden
+- **Login** per SCRAM mit Rückfall auf den älteren Passwort-Login, gespeichert per Face ID
+- **Funk** – LTE- und 5G-NR-Werte (RSRP, RSRQ, SINR, Band, PCI …), Zell-ID/eNB,
+  gebündelte Zellen (Carrier Aggregation) und Nachbarzellen
+- **Netz** – 5G SA / NSA / SA+NSA, nur 4G (FDD/TDD), Netzmodus und LTE-Bandmaske
+- **Sperre** – Band-, Frequenz- und Zellsperre (PCI) für 4G und 5G (`/api/net/lock-freq`)
+- **Gerät** – mobile Daten, Roaming, VoLTE, Netz neu verbinden, Datenverbrauch,
+  LED-Nachtmodus, geplanter Neustart, Neustart, Netzbetreiberwahl, APN-Profile,
+  Ping/Traceroute, verbundene Geräte, API-Explorer
+- **SMS** – lesen, senden, löschen
 
-## Referenz
+## Herkunft der Schnittstellen
 
-Login, CSRF-Token-Handling und Bandmasken folgen der Python-Bibliothek
-[huawei-lte-api](https://github.com/Salamek/huawei-lte-api) (Salamek).
-Diese kennt allerdings keine 5G-spezifischen Endpunkte (SA/NSA, NR-Bänder).
+- Login, Token-Handling und Bandmasken: Python-Bibliothek
+  [huawei-lte-api](https://github.com/Salamek/huawei-lte-api) (Salamek)
+- 5G-Modus, Sperren, Entwickleranmeldung (`loginflag=2`) und die verschlüsselten Anfragen
+  (Curve25519 + AES-GCM, `enc-type`): nachgebaut aus der Weboberfläche des Routers
+  (`js/networkmode.js`, `js/lockband.js`, `js/main.js`)
 
 ## Build
 
@@ -30,8 +36,7 @@ Bei einem Tag `v*` wird die IPA zusätzlich an ein GitHub-Release gehängt.
 Die IPA ist **unsigniert** und muss vor der Installation signiert werden,
 z. B. mit AltStore, SideStore, Sideloadly oder TrollStore.
 
-## Offene Punkte
+## Nicht unterstützt
 
-- 5G SA/NSA-Umschaltung, NR-Bänder, Frequenz-/Zellsperre: Die genauen Endpunkte des
-  H153-381 sind noch nicht bestätigt. Am besten im Web-Interface des Routers die Einstellung ändern,
-  in den Browser-Entwicklertools (Tab „Netzwerk“) die Anfrage mitschneiden und hier ergänzen.
+- USSD ist in der Firmware des H153-381 abgeschaltet (`ussd_enabled = 0`)
+- Verschlüsselung nur per ECC; Router, die nur RSA anbieten, können keine SMS senden

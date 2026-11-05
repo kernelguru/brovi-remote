@@ -27,7 +27,7 @@ struct LockView: View {
 
                 if loadedOnce && !hasLTE && !hasNR {
                     Section {
-                        Text("Der Router liefert keine Sperr-Einstellungen (lte_info/nr_info). Rohdaten siehe API-Tab: /api/net/lock-freq.")
+                        Text("Der Router liefert keine Sperr-Einstellungen (lte_info/nr_info). Rohdaten siehe Gerät › API-Explorer: /api/net/lock-freq.")
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -79,6 +79,8 @@ struct LockView: View {
         busy = true
         defer { busy = false; loadedOnce = true }
         do {
+            // Die Sperr-Schnittstelle gehört zum Entwicklermenü und braucht die zweite Anmeldung.
+            try await client.enableDeveloperAccess()
             let node = try await client.get("/api/net/lock-freq")
             if let info = node.child("lte_info") { lte = LockConfig(rat: .lte, node: info); hasLTE = true } else { hasLTE = false }
             if let info = node.child("nr_info") { nr = LockConfig(rat: .nr, node: info); hasNR = true } else { hasNR = false }

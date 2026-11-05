@@ -55,8 +55,8 @@ actor RouterClient {
 
     // MARK: - Öffentliche API
 
-    func get(_ path: String) async throws -> XMLNode {
-        try await recoveringSession { try await self.getOnce(path) }
+    func get(_ path: String, timeout: TimeInterval = RouterClient.defaultTimeout) async throws -> XMLNode {
+        try await recoveringSession { try await self.getOnce(path, timeout: timeout) }
     }
 
     /// Sendet `<request>inner</request>` per POST.
@@ -75,8 +75,40 @@ actor RouterClient {
         credentials = (username, password)
     }
 
+    /// Arten verschlüsselter Anfragen (Parameter `enc-type` der Weboberfläche).
+    enum Encryption: String {
+        /// Anfrage und Antwort im Klartext, nur Client-Schlüssel in der URL (z. B. SMS senden).
+        case keyOnly = "2"
+        /// Antwort verschlüsselt (z. B. Listen mit persönlichen Daten).
+        case response = "3"
+        /// Anfrage und Antwort verschlüsselt.
+        case full = "1"
+    }
+
+    /// POST wie die Weboberfläche mit Content-Type „…;enc“ (Curve25519 + AES-GCM, siehe EccSession).
+    func postEncrypted(_ path: String, _ inner: String, encryption: Encryption,
+                       timeout: TimeInterval = RouterClient.defaultTimeout) async throws -> XMLNode {
+        try await recoveringSession {
+            do {
+                return try await self.postEncryptedOnce(path, inner, encryption: encryption, timeout: timeout)
+            } catch let error as RouterError where RouterError.tokenErrors.contains(error.code ?? "") {
+                self.tokens.removeAll()
+                return try await self.postEncryptedOnce(path, inner, encryption: encryption, timeout: timeout)
+            }
+        }
+    }
+
+    /// Zweite Anmeldung (loginflag 2) wie im Entwicklermenü der Weboberfläche.
+    /// Erst danach liefern z. B. /api/net/lock-freq und /api/net/lte-band-info Daten.
+    func enableDeveloperAccess() async throws {
+        try await recoveringSession { try await self.developerLoginIfNeeded() }
+        developerAccess = true
+    }
+
     func logout() async throws {
         credentials = nil
+        developerAccess = false
+        ecc = nil
         _ = try await postRetryingToken("/api/user/logout", "<Logout>1</Logout>")
     }
 
@@ -89,12 +121,63 @@ actor RouterClient {
         } catch let error as RouterError where RouterError.sessionErrors.contains(error.code ?? "") {
             guard let credentials else { throw error }
             try await performLogin(username: credentials.username, password: credentials.password)
+            if developerAccess { try? await developerLoginIfNeeded() }
             return try await operation()
         }
     }
 
-    private func getOnce(_ path: String) async throws -> XMLNode {
-        let (data, _) = try await send(path: path, body: nil, token: tokens.count == 1 ? tokens[0] : nil)
+    private var developerAccess = false
+    private var ecc: EccSession?
+
+    private func developerLoginIfNeeded() async throws {
+        if let state = try? await getOnce("/api/user/second_login"), state["enable"] == "1" { return }
+        guard let credentials else {
+            throw RouterError(code: nil, message: "Keine Zugangsdaten für die Entwickleranmeldung")
+        }
+        guard try await scramLogin(username: credentials.username, password: credentials.password, loginFlag: "2") else {
+            throw RouterError(code: nil, message: "Entwickleranmeldung wird nicht unterstützt")
+        }
+    }
+
+    private func eccSession() async throws -> EccSession {
+        if let ecc { return ecc }
+        let node = try await getOnce("/api/webserver/publickey")
+        guard let serverKey = node["ecc_server_pubkey"], !serverKey.isEmpty else {
+            throw RouterError(code: nil, message: "Router bietet keine ECC-Verschlüsselung an (nur RSA – noch nicht unterstützt)")
+        }
+        let session = try EccSession(serverKeyHex: serverKey)
+        ecc = session
+        return session
+    }
+
+    private func postEncryptedOnce(_ path: String, _ inner: String, encryption: Encryption,
+                                   timeout: TimeInterval) async throws -> XMLNode {
+        let session = try await eccSession()
+        if tokens.isEmpty { try await refreshToken() }
+        var body = #"<?xml version="1.0" encoding="UTF-8"?><request>"# + inner + "</request>"
+        if encryption == .full { body = try session.encrypt(body) }
+        let url = "\(path)?ecc-client-pubkey=\(session.clientKeyHex)&enc-type=\(encryption.rawValue)"
+        let (data, _) = try await send(path: url, body: body, token: nextToken(), timeout: timeout,
+                                       contentType: "application/x-www-form-urlencoded; charset=UTF-8")
+        // Klartext-XML direkt auswerten, sonst als verschlüsselten Hex-Block entschlüsseln.
+        if let node = XMLNode.parse(data) {
+            if node.name == "error" { throw RouterError.fromCode(node["code"] ?? "?") }
+            if node.children.isEmpty, node.value.count > 64, node.value.allSatisfy(\.isHexDigit) {
+                return try Self.decryptedNode(node.value, session: session)
+            }
+            return node
+        }
+        return try Self.decryptedNode(String(decoding: data, as: UTF8.self), session: session)
+    }
+
+    private static func decryptedNode(_ hex: String, session: EccSession) throws -> XMLNode {
+        let plain = try session.decrypt(hex)
+        let xml = plain.range(of: "<response>").map { String(plain[$0.lowerBound...]) } ?? plain
+        return try parseResponse(Data(xml.utf8))
+    }
+
+    private func getOnce(_ path: String, timeout: TimeInterval = RouterClient.defaultTimeout) async throws -> XMLNode {
+        let (data, _) = try await send(path: path, body: nil, token: tokens.count == 1 ? tokens[0] : nil, timeout: timeout)
         return try Self.parseResponse(data)
     }
 
@@ -149,14 +232,13 @@ actor RouterClient {
     // MARK: - Intern
 
     /// Gibt `false` zurück, wenn der Router kein SCRAM anbietet (dann klassischer Login).
-    private func scramLogin(username: String, password: String) async throws -> Bool {
+    private func scramLogin(username: String, password: String, loginFlag: String? = nil) async throws -> Bool {
         let firstNonce = Crypto.randomHex(bytes: 32)
         let challenge: XMLNode
+        var inner = "<username>\(username.xmlEscaped)</username><firstnonce>\(firstNonce)</firstnonce><mode>1</mode>"
+        if let loginFlag { inner += "<loginflag>\(loginFlag)</loginflag>" }
         do {
-            challenge = try await postOnce(
-                "/api/user/challenge_login",
-                "<username>\(username.xmlEscaped)</username><firstnonce>\(firstNonce)</firstnonce><mode>1</mode>"
-            )
+            challenge = try await postOnce("/api/user/challenge_login", inner)
         } catch let error as RouterError where error.code == "100002" || error.code == "100003" {
             return false
         }
@@ -254,7 +336,8 @@ actor RouterClient {
     static let defaultTimeout: TimeInterval = 10
 
     private func send(path: String, body: String?, token: String?,
-                      timeout: TimeInterval = RouterClient.defaultTimeout) async throws -> (Data, HTTPURLResponse) {
+                      timeout: TimeInterval = RouterClient.defaultTimeout,
+                      contentType: String = "application/xml") async throws -> (Data, HTTPURLResponse) {
         guard let url = URL(string: path, relativeTo: baseURL) else {
             throw RouterError(code: nil, message: "Ungültiger Pfad")
         }
@@ -266,7 +349,7 @@ actor RouterClient {
         if let body {
             request.httpMethod = "POST"
             request.httpBody = Data(body.utf8)
-            request.setValue("application/xml", forHTTPHeaderField: "Content-Type")
+            request.setValue(contentType, forHTTPHeaderField: "Content-Type")
         }
         if let token {
             request.setValue(token, forHTTPHeaderField: "__RequestVerificationToken")

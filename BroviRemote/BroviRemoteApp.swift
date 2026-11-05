@@ -114,8 +114,10 @@ struct ContentView: View {
                     .tabItem { Label("Netz", systemImage: "slider.horizontal.3") }
                 LockView(client: client)
                     .tabItem { Label("Sperre", systemImage: "lock.shield") }
-                ExplorerView(client: client)
-                    .tabItem { Label("API", systemImage: "terminal") }
+                DeviceView(client: client)
+                    .tabItem { Label("Gerät", systemImage: "wifi.router") }
+                SmsView(client: client)
+                    .tabItem { Label("SMS", systemImage: "message") }
             }
             .minimizingTabBar()
         } else {

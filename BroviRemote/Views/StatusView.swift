@@ -27,6 +27,7 @@ struct StatusView: View {
                     connectionCard
                     if hasNR { nrCard }
                     if hasLTE { lteCard }
+                    CellListsView(client: client)
                     if !otherFields.isEmpty { otherCard }
                     if let updated {
                         Text("Aktualisiert \(updated.formatted(date: .omitted, time: .standard))")

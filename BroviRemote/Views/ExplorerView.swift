@@ -34,7 +34,6 @@ struct ExplorerView: View {
     ]
 
     var body: some View {
-        NavigationStack {
             Form {
                 Section("Anfrage") {
                     TextField("Pfad", text: $path)
@@ -82,7 +81,6 @@ struct ExplorerView: View {
             }
             .appBackground()
             .navigationTitle("API-Explorer")
-        }
     }
 
     private func send() async {
